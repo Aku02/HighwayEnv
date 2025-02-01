@@ -7,6 +7,7 @@ from highway_env.envs.common.abstract import AbstractEnv
 from highway_env.road.lane import CircularLane, LineType, StraightLane
 from highway_env.road.road import Road, RoadNetwork
 from highway_env.vehicle.behavior import IDMVehicle
+from highway_env.vehicle.kinematics import Vehicle
 
 
 class RacetrackEnv(AbstractEnv):
@@ -43,37 +44,104 @@ class RacetrackEnv(AbstractEnv):
                 "simulation_frequency": 15,
                 "policy_frequency": 5,
                 "duration": 300,
-                "collision_reward": -1,
+                "collision_reward": -10,
                 "lane_centering_cost": 4,
                 "lane_centering_reward": 1,
                 "action_reward": -0.3,
                 "controlled_vehicles": 1,
                 "other_vehicles": 1,
-                "screen_width": 600,
+                "screen_width": 1000,
                 "screen_height": 600,
                 "centering_position": [0.5, 0.5],
-                "speed_limit": 10.0,
+                # "reward_speed_range": [7.0, 9.0],
+                "speed_limit": 25.0,
+                "max_speed": 50,
             }
         )
         return config
 
-    def _reward(self, action: np.ndarray) -> float:
-        rewards = self._rewards(action)
-        reward = sum(
-            self.config.get(name, 0) * reward for name, reward in rewards.items()
-        )
+    # def _reward(self, action: np.ndarray) -> float:
+    #     rewards = self._rewards(action)
+    #     reward = sum(
+    #         self.config.get(name, 0) * reward for name, reward in rewards.items()
+    #     )
+    #     reward = utils.lmap(reward, [self.config["collision_reward"], 1], [0, 1])
+    #     reward *= rewards["on_road_reward"]
+    #     return reward
+
+    # def _rewards(self, action: np.ndarray) -> dict[str, float]:
+    #     _, lateral = self.vehicle.lane.local_coordinates(self.vehicle.position)
+    #     return {
+    #         "lane_centering_reward": 1
+    #         / (1 + self.config["lane_centering_cost"] * lateral**2),
+    #         "action_reward": np.linalg.norm(action),
+    #         "collision_reward": self.vehicle.crashed,
+    #         "on_road_reward": self.vehicle.on_road,
+    #     }
+
+    def _reward(self, action: np.ndarray) -> tuple:
+        """
+        Returns a tuple of rewards, one for each controlled vehicle.
+        """
+        return tuple(self._agent_reward(action, vehicle) for vehicle in self.controlled_vehicles)
+
+    def _rewards(self, action: np.ndarray) -> list[dict[str, float]]:
+        """
+        Returns a list of dictionaries, where each dictionary contains the multi-objective
+        rewards for a controlled vehicle.
+        """
+        return [self._agent_rewards(action, vehicle) for vehicle in self.controlled_vehicles]
+
+    def _agent_reward(self, action: np.ndarray, vehicle: Vehicle) -> float:
+        """
+        Computes the scalar reward for a single vehicle.
+        """
+        rewards = self._agent_rewards(action, vehicle)
+        reward = sum(self.config.get(name, 0) * reward for name, reward in rewards.items())
+        if vehicle.speed < 0:
+            reward += self.config.get("negative_velocity_penalty", -1.0)
         reward = utils.lmap(reward, [self.config["collision_reward"], 1], [0, 1])
-        reward *= rewards["on_road_reward"]
+        if not rewards["on_road_reward"]:
+            reward *= 0
+        # reward *= float(rewards["on_road_reward"]) + -1.0
         return reward
 
-    def _rewards(self, action: np.ndarray) -> dict[str, float]:
-        _, lateral = self.vehicle.lane.local_coordinates(self.vehicle.position)
+    def _agent_rewards(self, action: np.ndarray, vehicle: Vehicle) -> dict[str, float]:
+        """
+        Computes the multi-objective rewards for a single vehicle, including a speed-based reward and collision penalty.
+        """
+        _, lateral = vehicle.lane.local_coordinates(vehicle.position)
+
+        # Configuration parameters
+        v_max = 50.0  # Maximum speed
+        v_min = 5.0   # Minimum speed
+        collision_penalty = -1 #self.config.get("collision_penalty", 1.0)  # Default penalty coefficient
+        negative_velocity_penalty = -2.0  # Penalty coefficient for reverse motion
+
+        # Normalize the vehicle speed between v_min and v_max
+        normalized_speed = (vehicle.speed - v_min) / (v_max - v_min)
+        normalized_speed = np.clip(normalized_speed, 0.0, 1.0)  # Ensure it's within [0, 1]
+
+        # Speed reward: Encourages traveling fast within the specified range
+        speed_reward = normalized_speed*10
+
+        # Collision penalty
+        collision_reward = -collision_penalty if vehicle.crashed else 0.0
+
+        # Compute other rewards
+        lane_centering_reward = 1 / (1 + self.config["lane_centering_cost"] * lateral**2)
+        action_penalty = -np.linalg.norm(action)  # Penalize larger actions
+
+        reverse_penalty = negative_velocity_penalty if vehicle.speed < 0 else 0.0
+
+        # Return the computed rewards
         return {
-            "lane_centering_reward": 1
-            / (1 + self.config["lane_centering_cost"] * lateral**2),
-            "action_reward": np.linalg.norm(action),
-            "collision_reward": self.vehicle.crashed,
-            "on_road_reward": self.vehicle.on_road,
+            "lane_centering_reward": lane_centering_reward*2,
+            "action_reward": action_penalty,
+            "collision_reward": collision_reward,
+            "on_road_reward": vehicle.on_road,
+            "speed_reward": speed_reward,  # New speed-based reward term
+            "reverse_penalty": reverse_penalty,  # New reverse penalty term
         }
 
     def _is_terminated(self) -> bool:
@@ -393,7 +461,9 @@ class RacetrackEnv(AbstractEnv):
             self.road.vehicles.append(vehicle)
 
             # Other vehicles
-            for i in range(rng.integers(self.config["other_vehicles"])):
+            # for i in range(rng.integers(self.config["other_vehicles"])):
+            for i in range(self.config["other_vehicles"]):
+            
                 random_lane_index = self.road.network.random_lane_index(rng)
                 vehicle = IDMVehicle.make_on_lane(
                     self.road,

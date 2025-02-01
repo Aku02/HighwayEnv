@@ -6,13 +6,26 @@ from stable_baselines3.common.vec_env import SubprocVecEnv
 
 import highway_env  # noqa: F401
 
-
+def train_env():
+    env = gym.make('racetrack-v0')
+    env.reset()
+    return env
 TRAIN = True
 
 if __name__ == "__main__":
     n_cpu = 6
     batch_size = 64
-    env = make_vec_env("racetrack-v0", n_envs=n_cpu, vec_env_cls=SubprocVecEnv)
+    env = make_vec_env(train_env, n_envs=n_cpu, vec_env_cls=SubprocVecEnv)
+    # env = make_vec_env("highway-fast-v0", n_envs=n_cpu, vec_env_cls=SubprocVecEnv, env_kwargs={
+    #         "config": {
+    #             "action": {
+    #                 "type": "ContinuousAction"
+    #             },
+    #         },
+    #         "render_mode":"rgb_array",
+    #     })
+    env.render_mode = "rgb_array"
+
     model = PPO(
         "MlpPolicy",
         env,
@@ -34,11 +47,11 @@ if __name__ == "__main__":
     # Run the algorithm
     model = PPO.load("racetrack_ppo/model", env=env)
 
-    env = gym.make("racetrack-v0")
-    env = RecordVideo(
-        env, video_folder="racetrack_ppo/videos", episode_trigger=lambda e: True
-    )
-    env.unwrapped.set_record_video_wrapper(env)
+    env = gym.make("racetrack-v0", render_mode="rgb_array")
+    # env = RecordVideo(
+    #     env, video_folder="racetrack_ppo/videos", episode_trigger=lambda e: True
+    # )
+    # env.unwrapped.set_record_video_wrapper(env)
 
     for video in range(10):
         done = truncated = False
@@ -49,5 +62,5 @@ if __name__ == "__main__":
             # Get reward
             obs, reward, done, truncated, info = env.step(action)
             # Render
-            env.render()
+            # env.render()
     env.close()

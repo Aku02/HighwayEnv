@@ -13,10 +13,17 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from torch.distributions import Categorical
 from torch.nn import functional as F
+from wandb.integration.sb3 import WandbCallback
+from gymnasium.wrappers import RecordVideo
+from gymnasium.wrappers import FlattenObservation
+from scripts.sb3_highway_a2c import RLeXploreWithOnPolicyRL
+from rllte.xplore.reward import RND, RIDE, ICM
 
 import highway_env  # noqa: F401
 from highway_env.utils import lmap
-
+import wandb
+import os 
+# os.environ["WANDB_MODE"] = "offline"
 
 # ==================================
 #        Policy Architecture
@@ -244,7 +251,7 @@ def attention(query, key, value, mask=None, dropout=None):
 
 attention_network_kwargs = dict(
     in_size=5 * 15,
-    embedding_layer_kwargs={"in_size": 7, "layer_sizes": [64, 64], "reshape": False},
+    embedding_layer_kwargs={"in_size": 70, "layer_sizes": [64, 64], "reshape": False},
     attention_layer_kwargs={"feature_size": 64, "heads": 2},
 )
 
@@ -272,14 +279,18 @@ class CustomExtractor(BaseFeaturesExtractor):
 # ==================================
 
 
-def make_configure_env(**kwargs):
-    env = gym.make(kwargs["id"], config=kwargs["config"])
+def make_configure_env(eval= False, **kwargs):
+    if eval:
+        env = gym.make(kwargs["id"], config=kwargs["config"], render_mode="rgb_array")
+    else:
+        env = gym.make(kwargs["id"], config=kwargs["config"])
+    env = FlattenObservation(env)
     env.reset()
     return env
 
 
 env_kwargs = {
-    "id": "highway-v0",
+    "id": "highway-fast-v0",
     "config": {
         "lanes_count": 3,
         "vehicles_count": 15,
@@ -370,6 +381,19 @@ def compute_vehicles_attention(env, model):
 # ==================================
 
 if __name__ == "__main__":
+    wandb.init(
+    project="rl_attention_ppo",
+    sync_tensorboard=True,
+    config={
+        "policy": "CustomExtractor",
+        "batch_size": 64,
+        "learning_rate": 2e-3,
+        "gamma": 0.99,
+        "total_timesteps": 200000,
+        "environment": "highway-fast-v0",
+        "int": "icm",
+    },
+)
     train = True
     if train:
         n_cpu = 4
@@ -389,26 +413,60 @@ if __name__ == "__main__":
             env,
             n_steps=512 // n_cpu,
             batch_size=64,
-            learning_rate=2e-3,
+            learning_rate=1e-3,
             policy_kwargs=policy_kwargs,
             verbose=2,
             tensorboard_log="highway_attention_ppo/",
         )
+        irs = ICM(env, encoder_model='none', device="cuda")
+        intrinsic_callback = RLeXploreWithOnPolicyRL(irs=irs)
+        model.learn(total_timesteps=200 * 1000,
+                    callback=[intrinsic_callback, WandbCallback(verbose=2)]
+                    )
+
         # Train the agent
-        model.learn(total_timesteps=200 * 1000)
+        # for step in range(1, 201):  # Log every 1000 steps
+        #     model.learn(total_timesteps=1000, reset_num_timesteps=False)
+        #     # Log custom metrics to WandB
+        #     mean_reward = np.mean([env.get_attr("episode_reward", i)[-1] for i in range(n_cpu)])
+        #     wandb.log({"mean_reward": mean_reward, "step": step * 1000})
+        
         # Save the agent
         model.save("highway_attention_ppo/model")
 
+    # Load the trained model
     model = PPO.load("highway_attention_ppo/model")
-    env = make_configure_env(**env_kwargs)
+    env = make_configure_env(eval=True, **env_kwargs)
+    env = RecordVideo(
+        env, video_folder="highway_ppo_attn/videos/", episode_trigger=lambda e: True
+    )
+    
     env.render()
     env.viewer.set_agent_display(
         functools.partial(display_vehicles_attention, env=env, model=model)
     )
-    for _ in range(5):
+    
+    # Evaluation with WandB Logging
+    mean_rewards = []
+    for episode in range(10):
         obs, info = env.reset()
         done = truncated = False
+        episode_reward = 0
         while not (done or truncated):
             action, _ = model.predict(obs)
             obs, reward, done, truncated, info = env.step(action)
+            episode_reward += reward
             env.render()
+        
+        # Log the episode reward to WandB
+        wandb.log({"test_reward": episode_reward, "episode": episode})
+        mean_rewards.append(episode_reward)
+        print(f"Episode {episode + 1} - Reward: {episode_reward}")
+
+    # Log the mean reward of the evaluation
+    mean_reward = sum(mean_rewards) / len(mean_rewards)
+    wandb.log({"mean_test_reward": mean_reward})
+    print(f"Mean test reward: {mean_reward}")
+
+    # Finish the WandB run
+    wandb.finish()

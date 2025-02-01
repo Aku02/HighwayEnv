@@ -183,11 +183,13 @@ class EnvViewer:
     def window_position(self) -> np.ndarray:
         """the world position of the center of the displayed window."""
         if self.observer_vehicle:
-            return self.observer_vehicle.position
+            # return self.observer_vehicle.position
+            return np.array([60, -10])
         elif self.env.vehicle:
-            return self.env.vehicle.position
+            # return self.env.vehicle.position
+            return np.array([60, -10])
         else:
-            return np.array([0, 0])
+            return np.array([60, -10])
 
     def close(self) -> None:
         """Close the pygame window."""

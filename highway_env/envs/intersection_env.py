@@ -54,6 +54,7 @@ class IntersectionEnv(AbstractEnv):
                 "reward_speed_range": [7.0, 9.0],
                 "normalize_reward": False,
                 "offroad_terminal": False,
+                "max_speed": 50,
             }
         )
         return config
