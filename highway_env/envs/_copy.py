@@ -100,7 +100,7 @@ class RacetrackEnv(AbstractEnv):
         reward = sum(self.config.get(name, 0) * reward for name, reward in rewards.items())
         # if vehicle.speed < 10:
         #     reward += self.config.get("negative_velocity_penalty", -1.0)
-        reward = utils.lmap(reward, [-5, 5], [0, 1])
+        reward = utils.lmap(reward, [-1, 1], [0, 1])
         if not vehicle.on_road:
             reward *= 0
         # reward *= float(rewards["on_road_reward"]) + -1.0
@@ -115,7 +115,7 @@ class RacetrackEnv(AbstractEnv):
         # Configuration parameters
         v_max = 50.0  # Maximum speed
         v_min = 5.0   # Minimum speed
-        collision_penalty = 5 #self.config.get("collision_penalty", 1.0)  # Default penalty coefficient
+        collision_penalty = 1 #self.config.get("collision_penalty", 1.0)  # Default penalty coefficient
         negative_velocity_penalty = -2.0  # Penalty coefficient for reverse motion
 
         # Normalize the vehicle speed between v_min and v_max
@@ -129,23 +129,12 @@ class RacetrackEnv(AbstractEnv):
         collision_reward = -collision_penalty if vehicle.crashed else 0.0
 
         # Compute other rewards
-        lane_centering_reward = 5 / (1 + self.config["lane_centering_cost"] * lateral)
+        lane_centering_reward = 5 / (1 + self.config["lane_centering_cost"] * lateral**2)
         # action_penalty = -np.linalg.norm(action)  # Penalize larger actions
 
-        reverse_penalty = (vehicle.speed-15) if vehicle.speed < 15 else 0.0
+        reverse_penalty = (vehicle.speed-10) if vehicle.speed < 10 else 0.0
 
         # Return the computed rewards
-        if len(self.controlled_vehicles) > 1:
-            competitor = self.controlled_vehicles[0] if self.controlled_vehicles[0] is not vehicle else self.controlled_vehicles[1]
-            progress_self = self.compute_vehicle_progress(vehicle)
-            progress_competitor = self.compute_vehicle_progress(competitor)
-            # A positive gap means this vehicle is ahead; negative means it's behind.
-            gap = progress_self - progress_competitor
-            # Normalize the gap using an appropriate scale, for instance 100 m.
-            gap_reward = gap / 100.0
-            # print(gap)
-        else:
-            gap_reward = 0.0
         return {
             "lane_centering_reward": lane_centering_reward,
             # "action_reward": action_penalty,
@@ -153,7 +142,6 @@ class RacetrackEnv(AbstractEnv):
             "on_road_reward": vehicle.on_road,
             "speed_reward": normalized_speed,  # New speed-based reward term
             "reverse_penalty": reverse_penalty,  # New reverse penalty term
-            "gap_reward": gap_reward,
         }
 
     def _is_terminated(self) -> bool:
@@ -438,49 +426,6 @@ class RacetrackEnv(AbstractEnv):
             record_history=self.config["show_trajectories"],
         )
         self.road = road
-        self.circuit_order = [
-            ("a", "b", 0),  # Use the first (0th) lane for segment a→b
-            ("a", "b", 1),  # Use the second lane for segment a→b
-            ("b", "c", 0),  # Use the first lane for segment b→c
-            ("b", "c", 1),  # Use the second lane for segment b→c
-            ("c", "d", 0),  # Use the first lane for segment c→d
-            ("c", "d", 1),  # Use the second lane for segment c→d
-            ("d", "e", 0),  # Use the first lane for segment d→e
-            ("d", "e", 1),  # Use the second lane for segment d→e
-            ("e", "f", 0),  # Use the first lane for segment e→f
-            ("e", "f", 1),  # Use the second lane for segment e→f
-            ("f", "g", 0),  # Use the first lane for segment f→g
-            ("f", "g", 1),  # Use the second lane for segment f→g
-            ("g", "h", 0),  # Use the first lane for segment g→h
-            ("g", "h", 1),  # Use the second lane for segment g→h
-            ("h", "i", 0),  # Use the first lane for segment h→i
-            ("h", "i", 1),  # Use the second lane for segment h→i
-            ("i", "a", 0),   # Use the first lane for segment i→a (closing the loop)
-            ("i", "a", 1)   # Use the second lane for segment i→a (closing the loop)
-        ]
-    
-    def compute_vehicle_progress(self, vehicle) -> float:
-        try:
-            idx = self.circuit_order.index(vehicle.lane_index)
-        except ValueError:
-            raise ValueError("Vehicle's lane_index is not in the defined circuit order.")
-        
-        # Sum the lengths of all lanes before the current lane in the circuit order.
-        progress = sum(self.road.network.get_lane(lane_id).length for lane_id in self.circuit_order[:idx])
-        
-        # Get the local longitudinal coordinate (s) within the current lane.
-        s, _ = vehicle.lane.local_coordinates(vehicle.position)
-        progress += s
-        return progress
-
-    def distance_along_circuit(self, vehicle1, vehicle2) -> float:
-        total_length = sum(self.road.network.get_lane(lane_id).length for lane_id in self.circuit_order)
-        
-        p1 = self.compute_vehicle_progress(vehicle1)
-        p2 = self.compute_vehicle_progress(vehicle2)
-        
-        d = abs(p1 - p2)
-        return min(d, total_length - d)
 
     def _make_vehicles(self) -> None:
         """
@@ -489,32 +434,17 @@ class RacetrackEnv(AbstractEnv):
         rng = self.np_random
 
         # Controlled vehicles
-        # self.controlled_vehicles = []
-        # for i in range(self.config["controlled_vehicles"]):
-            
-        #     controlled_vehicle = self.action_type.vehicle_class.make_on_lane(
-        #         self.road, lane_index, speed=None, longitudinal=rng.uniform(20, 50)
-        #     )
-
-        #     self.controlled_vehicles.append(controlled_vehicle)
-        #     self.road.vehicles.append(controlled_vehicle)
-
         self.controlled_vehicles = []
-        start_lane = ("a", "b", 0)  # Choose a specific lane for the start
-        gap = 10.0  # gap between vehicles in meters along the lane
-        initial_longitudinal = 20.0  # starting position for the first vehicle
-
         for i in range(self.config["controlled_vehicles"]):
             lane_index = (
                 ("a", "b", rng.integers(2))
                 if i == 0
                 else self.road.network.random_lane_index(rng)
             )
-            # For a grid start, position vehicles with an increasing longitudinal offset
-            longitudinal = initial_longitudinal + i * gap
             controlled_vehicle = self.action_type.vehicle_class.make_on_lane(
-                self.road, start_lane, speed=None, longitudinal=longitudinal
+                self.road, lane_index, speed=None, longitudinal=rng.uniform(20, 50)
             )
+
             self.controlled_vehicles.append(controlled_vehicle)
             self.road.vehicles.append(controlled_vehicle)
 

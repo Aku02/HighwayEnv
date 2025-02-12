@@ -59,32 +59,13 @@ class RacetrackEnv(AbstractEnv):
             }
         )
         return config
-
-    # def _reward(self, action: np.ndarray) -> float:
-    #     rewards = self._rewards(action)
-    #     reward = sum(
-    #         self.config.get(name, 0) * reward for name, reward in rewards.items()
-    #     )
-    #     reward = utils.lmap(reward, [self.config["collision_reward"], 1], [0, 1])
-    #     reward *= rewards["on_road_reward"]
-    #     return reward
-
-    # def _rewards(self, action: np.ndarray) -> dict[str, float]:
-    #     _, lateral = self.vehicle.lane.local_coordinates(self.vehicle.position)
-    #     return {
-    #         "lane_centering_reward": 1
-    #         / (1 + self.config["lane_centering_cost"] * lateral**2),
-    #         "action_reward": np.linalg.norm(action),
-    #         "collision_reward": self.vehicle.crashed,
-    #         "on_road_reward": self.vehicle.on_road,
-    #     }
-
+    
     def _reward(self, action: np.ndarray) -> tuple:
         """
         Returns a tuple of rewards, one for each controlled vehicle.
         """
-        return tuple(self._agent_reward(action, vehicle) for vehicle in self.controlled_vehicles)
-
+        return tuple(self.get_rewards(action, vehicle) for vehicle in self.controlled_vehicles)
+    
     def _rewards(self, action: np.ndarray) -> list[dict[str, float]]:
         """
         Returns a list of dictionaries, where each dictionary contains the multi-objective
@@ -92,49 +73,17 @@ class RacetrackEnv(AbstractEnv):
         """
         return [self._agent_rewards(action, vehicle) for vehicle in self.controlled_vehicles]
 
-    def _agent_reward(self, action: np.ndarray, vehicle: Vehicle) -> float:
-        """
-        Computes the scalar reward for a single vehicle.
-        """
+    def get_rewards(self, action: np.ndarray, vehicle: Vehicle) -> float:
         rewards = self._agent_rewards(action, vehicle)
-        reward = sum(self.config.get(name, 0) * reward for name, reward in rewards.items())
-        # if vehicle.speed < 10:
-        #     reward += self.config.get("negative_velocity_penalty", -1.0)
-        reward = utils.lmap(reward, [-5, 5], [0, 1])
-        if not vehicle.on_road:
-            reward *= 0
-        # reward *= float(rewards["on_road_reward"]) + -1.0
+        reward = sum(
+            self.config.get(name, 0) * reward for name, reward in rewards.items()
+        )
+        reward = utils.lmap(reward, [self.config["collision_reward"], 1], [0, 1])
+        reward *= rewards["on_road_reward"]
         return reward
 
     def _agent_rewards(self, action: np.ndarray, vehicle: Vehicle) -> dict[str, float]:
-        """
-        Computes the multi-objective rewards for a single vehicle, including a speed-based reward and collision penalty.
-        """
-        _, lateral = vehicle.lane.local_coordinates(vehicle.position)
-
-        # Configuration parameters
-        v_max = 50.0  # Maximum speed
-        v_min = 5.0   # Minimum speed
-        collision_penalty = 5 #self.config.get("collision_penalty", 1.0)  # Default penalty coefficient
-        negative_velocity_penalty = -2.0  # Penalty coefficient for reverse motion
-
-        # Normalize the vehicle speed between v_min and v_max
-        normalized_speed = (vehicle.speed - v_min) #/ (v_max - v_min)
-        # normalized_speed = np.clip(normalized_speed, 0.0, 1.0)  # Ensure it's within [0, 1]
-
-        # Speed reward: Encourages traveling fast within the specified range
-        # speed_reward = normalized_speed
-
-        # Collision penalty
-        collision_reward = -collision_penalty if vehicle.crashed else 0.0
-
-        # Compute other rewards
-        lane_centering_reward = 5 / (1 + self.config["lane_centering_cost"] * lateral)
-        # action_penalty = -np.linalg.norm(action)  # Penalize larger actions
-
-        reverse_penalty = (vehicle.speed-15) if vehicle.speed < 15 else 0.0
-
-        # Return the computed rewards
+        _, lateral = self.vehicle.lane.local_coordinates(self.vehicle.position)
         if len(self.controlled_vehicles) > 1:
             competitor = self.controlled_vehicles[0] if self.controlled_vehicles[0] is not vehicle else self.controlled_vehicles[1]
             progress_self = self.compute_vehicle_progress(vehicle)
@@ -145,14 +94,13 @@ class RacetrackEnv(AbstractEnv):
             gap_reward = gap / 100.0
             # print(gap)
         else:
-            gap_reward = 0.0
+            gap_reward = 0.0 
         return {
-            "lane_centering_reward": lane_centering_reward,
-            # "action_reward": action_penalty,
-            "collision_reward": collision_reward,
-            "on_road_reward": vehicle.on_road,
-            "speed_reward": normalized_speed,  # New speed-based reward term
-            "reverse_penalty": reverse_penalty,  # New reverse penalty term
+            "lane_centering_reward": 1
+            / (1 + self.config["lane_centering_cost"] * lateral**2),
+            "action_reward": np.linalg.norm(action),
+            "collision_reward": self.vehicle.crashed,
+            "on_road_reward": self.vehicle.on_road,
             "gap_reward": gap_reward,
         }
 
